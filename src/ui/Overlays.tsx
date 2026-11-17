@@ -183,10 +183,11 @@ export function ResultScreen({
   }, [cleared]);
 
   useEffect(() => {
-    if (!submitted) inputRef.current?.focus();
+    // don't pop the virtual keyboard over the result screen on touch devices
+    if (!submitted && !matchMedia("(pointer: coarse)").matches) inputRef.current?.focus();
   }, [submitted]);
 
-  const newRecord = rank !== null && rank <= 3 && result.score > 0;
+  const newRecord = rank !== null && rank > 0 && rank <= 3 && result.score > 0;
 
   return (
     <div className="pointer-events-auto absolute inset-0 overflow-y-auto bg-[#061a28]/78 p-3 backdrop-blur-[3px] md:flex md:items-center md:justify-center md:p-6">
@@ -278,7 +279,7 @@ export function ResultScreen({
                   className="font-display w-full min-w-0 bg-transparent text-sm tracking-widest text-cream outline-none placeholder:text-cream/30"
                 />
               </label>
-              <Button tone="gold" type="submit" onClick={onSubmit} icon={<Trophy className="h-4 w-4" />}>
+              <Button tone="gold" type="submit" icon={<Trophy className="h-4 w-4" />}>
                 Log it
               </Button>
             </form>

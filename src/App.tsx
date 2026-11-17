@@ -56,6 +56,7 @@ export default function App() {
     return () => {
       window.removeEventListener("touchstart", onTouch);
       g.dispose();
+      if (import.meta.env.DEV) delete (window as unknown as { __game?: Game }).__game;
       gameRef.current = null;
     };
   }, []);
@@ -112,7 +113,10 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") {
-        if (e.key === "Enter") e.preventDefault();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submit();
+        }
         return;
       }
       const p = gameRef.current?.phase;
@@ -129,7 +133,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [start, again, retrySeed, toggleMute]);
+  }, [start, again, retrySeed, toggleMute, submit]);
 
   /* keep the canvas sized with the visual viewport (mobile URL bar) */
   useEffect(() => {

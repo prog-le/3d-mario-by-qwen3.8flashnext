@@ -18,6 +18,7 @@ interface T3 {
 
 const dummy = new THREE.Object3D();
 const c = new THREE.Color();
+const col = new THREE.Color();
 
 export class Fx {
   private mesh: THREE.InstancedMesh;
@@ -28,6 +29,7 @@ export class Fx {
   private shakeMax = 1;
   flashA = 0;
   flashColor = "#ffffff";
+  private dirty = false;
   private cam: THREE.Camera;
   private ctx: CanvasRenderingContext2D;
   private v = new THREE.Vector3();
@@ -71,7 +73,7 @@ export class Fx {
     opts: { count?: number; color?: string | number; speed?: number; life?: number; size?: number; grav?: number; up?: number; spread?: number } = {}
   ) {
     const count = opts.count ?? 14;
-    const col = typeof opts.color === "number" ? new THREE.Color(opts.color) : new THREE.Color(opts.color ?? "#ffd34d");
+    col.set(opts.color ?? "#ffd34d");
     const speed = opts.speed ?? 7;
     const life = opts.life ?? 0.65;
     const size = opts.size ?? 0.24;
@@ -102,7 +104,7 @@ export class Fx {
   /** flat expanding disc of sparks, used for slams and landings */
   ring(pos: { x: number; y: number; z: number }, opts: { count?: number; color?: string | number; speed?: number; size?: number } = {}) {
     const count = opts.count ?? 18;
-    const col = new THREE.Color(opts.color ?? "#fff4dc");
+    col.set(opts.color ?? "#fff4dc");
     const speed = opts.speed ?? 9;
     const size = opts.size ?? 0.3;
     this.spawn(count, (p, i) => {
@@ -124,7 +126,7 @@ export class Fx {
   }
 
   trail(pos: { x: number; y: number; z: number }, color: string | number, n = 2) {
-    const col = new THREE.Color(color);
+    col.set(color);
     this.spawn(n, (p) => {
       p.x = pos.x + (Math.random() - 0.5) * 0.5;
       p.y = pos.y + (Math.random() - 0.5) * 0.6;
@@ -204,11 +206,22 @@ export class Fx {
     this.shake = Math.max(0, this.shake - dt * (this.shake > 0.55 ? 2.6 : 1.9));
     this.flashA = Math.max(0, this.flashA - dt * 2.2);
 
-    // ---- 2D overlay
+    // ---- 2D overlay (skip the full-screen clear while idle)
     const ctx = this.ctx;
+    const hasFlash = this.flashA > 0.002;
+    const hasTexts = this.texts.length > 0;
+    if (!hasFlash && !hasTexts) {
+      if (this.dirty) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        this.dirty = false;
+      }
+      return;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    if (this.flashA > 0.002) {
+    this.dirty = true;
+    if (hasFlash) {
       ctx.globalAlpha = Math.min(0.85, this.flashA);
       ctx.fillStyle = this.flashColor;
       ctx.fillRect(0, 0, w, h);
@@ -252,5 +265,6 @@ export class Fx {
     this.texts.length = 0;
     this.shake = 0;
     this.flashA = 0;
+    this.dirty = false;
   }
 }

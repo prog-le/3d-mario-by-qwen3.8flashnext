@@ -22,6 +22,19 @@ Build a polished, playable browser game: 3d mario . Make the core loop fun withi
 | 工程化 | 补齐 `vite-env.d.ts`（Vite 类型）、`.gitignore`、dev 专用调试句柄 `window.__game`（仅 `import.meta.env.DEV` 下存在，正式构建不含） |
 | 验证 | `tsc --noEmit` + `vite build` 全绿；用 headless Chrome 探针实测：静止零自动起跳、单次跳跃严格一个弧线、镜头始终在身后、第一视角切换与隐藏主角正常 |
 
+## 第二轮优化与修复（0.2.0）
+
+2026-11-17 的全面体检与修复，覆盖关卡生成、稳定性、移动端与性能。完整逐条记录见 [CHANGELOG.md](./CHANGELOG.md)。
+
+| 类别 | 内容 |
+| --- | --- |
+| 关卡生成 | 金币不再埋进石阶/方块、Goomba 不再生成在管道里、`?` 块与金币不再互相冲突；HUD 金币总数计入 `?` 块内金币 |
+| 稳定性 | WebGL 上下文丢失自动暂停并可恢复；音频解锁/构建全容错；渲染器/音频资源完整释放 |
+| 手感与判定 | 同一步内踩敌后不再被第二个敌人扣血；暂停恢复不再触发幽灵跳跃/旋转；顶 `?` 块得分显示 +150 |
+| 移动端 | 虚拟摇杆改用区域局部坐标（指针捕获后仍精准）；结算界面不再在触屏设备弹虚拟键盘 |
+| 性能 | 静态方块几何合并（每关约 75 个 draw call 降到约 6 个）；FX 覆盖层空闲跳过清屏；HUD 状态去重减少重渲染；非阻塞字体加载 |
+| 数据与工程 | 排行榜读取全字段校验防脏数据；锁定 `pnpm@9`；QA 脚本新增嵌块检测并修正误报 |
+
 ## 核心特性
 
 - **每局一条新赛道**：xorshift32 种子化随机，串联 15–18 个主题段（草地、跳台断档、水管花园、砖块阵、石阶、云台、尖刺桥、山脊、弹簧塔），终点是经典阶梯 + 城堡旗杆；失败/结算可「重试同一种子」。
@@ -47,7 +60,7 @@ pnpm dev            # 开发服务器，默认 http://localhost:5173
 ### 构建与预览
 
 ```bash
-pnpm build          # 输出单个 dist/index.html（约 940 kB，gzip 约 253 kB）
+pnpm build          # 输出单个 dist/index.html（约 936 kB，gzip 约 253 kB）
 pnpm preview        # 本地预览构建产物
 ```
 
@@ -87,7 +100,9 @@ pnpm preview        # 本地预览构建产物
 ```
 .
 ├── README.md
-├── index.html                 # 入口 HTML（字体预连接、meta）
+├── CHANGELOG.md               # 更新日志
+├── CLAUDE.md                  # AI 协作指南（命令、架构、开发约束）
+├── index.html                 # 入口 HTML（非阻塞字体加载、meta）
 ├── package.json               # 依赖与 dev / build / preview 脚本
 ├── vite.config.ts             # React + Tailwind + 单文件打包，@ → src 别名
 ├── tsconfig.json              # strict TS，noEmit
@@ -109,7 +124,7 @@ pnpm preview        # 本地预览构建产物
 │       ├── audio.ts           # WebAudio 合成音效与 BGM
 │       └── storage.ts         # 本地排行榜、名字、计时格式化
 └── tools/                     # 关卡 QA 脚本（用 bun/tsx 直接跑 .ts）
-    ├── levelcheck.ts          # 250 个 seed：NaN、断档、敌人落地、规模统计
+    ├── levelcheck.ts          # 250 个 seed：NaN、断档、敌人落地、金币/敌人嵌块、规模统计
     ├── gapcheck.ts            # 300 个 seed：超过 4.4 的不可跳断档
     ├── enemycheck.ts          # 300 个 seed：敌人是否悬浮
     └── dump.ts                # 打印指定 X 区间内的方块/敌人/金币布局
@@ -124,7 +139,7 @@ bun tools/dump.ts 12345 0 30
 
 ## 技术实现要点
 
-- **渲染**：Three.js `WebGLRenderer` + `PerspectiveCamera`，`InstancedMesh` 批量绘制金币/云/粒子；`BoxGeometry` UV 按世界尺寸平铺以保持贴图清晰；无阴影贴图，靠 blob shadow 与光照营造层次。
+- **渲染**：Three.js `WebGLRenderer` + `PerspectiveCamera`，`InstancedMesh` 批量绘制金币/云/粒子；静态方块按材质合并为单个 `BufferGeometry`（`mergeGeometries`）以压低 draw call；`BoxGeometry` UV 按世界尺寸平铺以保持贴图清晰；无阴影贴图，靠 blob shadow 与光照营造层次。
 - **物理**：AABB 碰撞 + SLAB=6 的空间哈希网格，逐轴推出与台阶辅助（step-up），尖刺单独作为 hazard 处理；敌人含 walk / shell / slide / dead 状态机，滑行龟壳可连锁击杀。
 - **循环**：`requestAnimationFrame` 驱动，物理以 `1/120` 固定步长追帧（单帧最多补 5 步），渲染与 HUD 独立节流；hit-stop / 慢动作只缩放模拟时间，不阻塞渲染。
 - **状态机**：`menu → playing →（paused / dying / dead / clearing）→ clear`，React 侧按 `phase` 切换界面，游戏逻辑与 UI 通过 `onHud` / `onEnd` 回调单向通信。

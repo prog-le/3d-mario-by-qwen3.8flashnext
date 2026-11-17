@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { COLORS, COMBO_MULT, PHYS, SCORE } from "./constants";
 import { generateLevel, type LevelData, type SolidKind } from "./level";
 import { buildGoomba, buildHero, buildKoopa, buildPole, buildStar, MAT } from "./models";
@@ -80,6 +81,8 @@ interface Coin { x: number; y: number; z: number; taken: number; base: number }
 const SLAB = 6;
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 const lerp = (a: number, b: number, t: number) => a + (b - a) * clamp(t, 0, 1);
+const HUD_KEYS: (keyof Hud)[] = ["phase", "camMode", "score", "coins", "coinTotal", "lives", "timeMs", "combo", "progress", "starT", "kills", "seedLabel", "message", "messageT"];
+const sameHud = (a: Hud, b: Hud) => HUD_KEYS.every((k) => a[k] === b[k]);
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
@@ -144,6 +147,7 @@ export class Game {
   private message = "";
   private messageT = 0;
   private hudT = 0;
+  private lastHud: Hud | null = null;
   private clearT = 0;
   private deathT = 0;
   private lastResult: RunResult | null = null;
@@ -163,8 +167,20 @@ export class Game {
     host.append(gl, this.overlay);
     this.octx = this.overlay.getContext("2d")!;
 
-    this.renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: !this.mobile, powerPreference: "high-performance" });
+    try {
+      this.renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: !this.mobile, powerPreference: "high-performance" });
+    } catch {
+      gl.remove();
+      this.overlay.remove();
+      throw new Error("WebGL unavailable");
+    }
     this.renderer.shadowMap.enabled = false;
+    this.renderer.domElement.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      if (this.phase === "playing") this.setPhase("paused");
+      this.say("RENDERER RESET — RESUME TO CONTINUE");
+    });
+    this.renderer.domElement.addEventListener("webglcontextrestored", () => this.resize());
     this.cam = new THREE.PerspectiveCamera(58, 1, 0.1, 300);
     this.cam.rotation.order = "YXZ";
 
@@ -257,13 +273,21 @@ export class Game {
   private buildLevel(seed: number) {
     this.seed = seed;
     this.disposeLevelMeshes();
+    this.starPickup = null;
     const lvl = generateLevel(seed);
     this.level = lvl;
     this.solids = [];
     this.grid.clear();
     this.coinGrid.clear();
 
+    // Static solids (everything except qblock/brick/crate/spike) are merged
+    // per-material into a handful of draw calls instead of one mesh per block.
+    const dynKinds = new Set<SolidKind>(["qblock", "brick", "crate"]);
+    const staticGeos = new Map<THREE.Material, THREE.BufferGeometry[]>();
+    const capGeos: THREE.BufferGeometry[] = [];
     const d = new THREE.Object3D();
+    const tileOf = (k: SolidKind) => (k === "brick" || k === "qblock" || k === "crate" ? 1.05 : k === "cloud" ? 1.35 : 1.8);
+
     for (const s of lvl.solids) {
       const solid: Solid = {
         x0: s.cx - s.sx / 2, x1: s.cx + s.sx / 2,
@@ -271,34 +295,46 @@ export class Game {
         z0: s.cz - s.sz / 2, z1: s.cz + s.sz / 2,
         kind: s.kind, q: s.q ?? -1, used: false, bump: 0, mesh: null, cap: null,
       };
-      const tileOf = (k: SolidKind) => (k === "brick" || k === "qblock" || k === "crate" ? 1.05 : k === "cloud" ? 1.35 : 1.8);
-      if (s.kind !== "spike") {
-        const mat = this.matFor(s.kind);
-        const geo = tiledBox(s.sx, s.sy, s.sz, tileOf(s.kind), mat.map ?? undefined);
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(s.cx, s.cy, s.cz);
-        if (s.kind === "grass") {
-          const capGeo = tiledBox(s.sx + 0.04, 0.42, s.sz + 0.04, 1.8, MAT.grass.map!);
-          const cap = new THREE.Mesh(capGeo, MAT.grass);
-          cap.position.set(s.cx, solid.y1 - 0.2, s.cz);
-          this.levelGroup.add(cap);
-          solid.cap = cap;
-        }
-        this.levelGroup.add(mesh);
-        solid.mesh = mesh;
-      } else {
-        // spike teeth
-        const n = Math.max(2, Math.round(s.sx / 0.5));
+      if (s.kind === "spike") {
+        // spike teeth — fill the whole hazard footprint so the damage box matches what's visible
+        const nx = Math.max(2, Math.round(s.sx / 0.5));
+        const nz = Math.max(1, Math.round(s.sz / 0.6));
         const geo = new THREE.ConeGeometry(0.2, 0.72, 4);
-        for (let i = 0; i < n; i++) {
-          const m = new THREE.Mesh(geo, MAT.spike);
-          m.position.set(s.cx - s.sx / 2 + (i + 0.5) * (s.sx / n), s.cy + 0.12, s.cz);
-          m.rotation.y = Math.PI / 4;
-          this.levelGroup.add(m);
+        for (let ix = 0; ix < nx; ix++) {
+          for (let iz = 0; iz < nz; iz++) {
+            const m = new THREE.Mesh(geo, MAT.spike);
+            m.position.set(
+              s.cx - s.sx / 2 + (ix + 0.5) * (s.sx / nx),
+              s.cy + 0.12,
+              s.cz - s.sz / 2 + (iz + 0.5) * (s.sz / nz)
+            );
+            m.rotation.y = Math.PI / 4;
+            this.levelGroup.add(m);
+          }
         }
         const base = new THREE.Mesh(new THREE.BoxGeometry(s.sx, 0.24, s.sz), MAT.stone);
         base.position.set(s.cx, s.cy - 0.3, s.cz);
         this.levelGroup.add(base);
+      } else if (dynKinds.has(s.kind)) {
+        // qblock/brick/crate keep individual meshes: they bump and (for qblock) swap material
+        const mat = this.matFor(s.kind);
+        const geo = tiledBox(s.sx, s.sy, s.sz, tileOf(s.kind), mat.map ?? undefined);
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(s.cx, s.cy, s.cz);
+        this.levelGroup.add(mesh);
+        solid.mesh = mesh;
+      } else {
+        const mat = this.matFor(s.kind);
+        const geo = tiledBox(s.sx, s.sy, s.sz, tileOf(s.kind), mat.map ?? undefined);
+        geo.translate(s.cx, s.cy, s.cz);
+        let arr = staticGeos.get(mat);
+        if (!arr) staticGeos.set(mat, (arr = []));
+        arr.push(geo);
+        if (s.kind === "grass") {
+          const capGeo = tiledBox(s.sx + 0.04, 0.42, s.sz + 0.04, 1.8, MAT.grass.map!);
+          capGeo.translate(s.cx, solid.y1 - 0.2, s.cz);
+          capGeos.push(capGeo);
+        }
       }
       const k0 = Math.floor(solid.x0 / SLAB);
       const k1 = Math.floor(solid.x1 / SLAB);
@@ -308,6 +344,18 @@ export class Game {
         arr.push(solid);
       }
       this.solids.push(solid);
+    }
+
+    // flush merged static geometry
+    for (const [mat, geos] of staticGeos) {
+      const merged = mergeGeometries(geos);
+      if (merged) this.levelGroup.add(new THREE.Mesh(merged, mat));
+      for (const g of geos) g.dispose();
+    }
+    if (capGeos.length) {
+      const merged = mergeGeometries(capGeos);
+      if (merged) this.levelGroup.add(new THREE.Mesh(merged, MAT.grass));
+      for (const g of capGeos) g.dispose();
     }
 
     // coins
@@ -376,7 +424,8 @@ export class Game {
 
   private disposeLevelMeshes() {
     this.levelGroup.traverse((o) => {
-      const m = o as THREE.Mesh;
+      const m = o as THREE.Mesh & { isInstancedMesh?: boolean; dispose?: () => void };
+      if (m.isInstancedMesh) m.dispose?.();
       if (m.geometry) m.geometry.dispose();
     });
     for (const c of this.levelGroup.children) this.levelGroup.remove(c);
@@ -402,6 +451,9 @@ export class Game {
   private static MOVE_KEYS = ["a", "d", "w", "s", "arrowleft", "arrowright", "arrowup", "arrowdown"];
 
   private onKey = (ev: KeyboardEvent) => {
+    // let text inputs (score-name field) receive every key normally
+    const tag = (ev.target as HTMLElement | null)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
     const down = ev.type === "keydown";
     const k = ev.key.toLowerCase();
     if (Game.MOVE_KEYS.includes(k) || k === " ") ev.preventDefault();
@@ -506,8 +558,15 @@ export class Game {
       this.input.mx = 0;
       this.input.mz = 0;
       this.input.jump = false;
+      this.input.jumpEdge = 0;
+      this.input.spinEdge = 0;
       this.touchActive = false;
-    } else this.recomputeMove();
+    } else {
+      this.recomputeMove();
+      // drop any press buffered while paused so resume never fires a phantom jump/spin
+      this.input.jumpEdge = 0;
+      this.input.spinEdge = 0;
+    }
     if (ph === "playing") sound.startMusic("play");
     else if (ph === "menu") sound.startMusic("menu");
     else sound.stopMusic();
@@ -536,6 +595,9 @@ export class Game {
     this.clearT = 0;
     this.deathT = 0;
     this.lastResult = null;
+    this.p.star = 0;
+    this.hero.aura.visible = false;
+    this.fovPulse = 0;
     const lvl = this.level!;
     this.respawn = { ...lvl.spawn };
     this.camYaw = Math.PI / 2; // face down-course at GO!
@@ -576,7 +638,7 @@ export class Game {
     this.hudT = now;
     const lvl = this.level;
     const span = lvl ? lvl.flag.x - lvl.spawn.x : 1;
-    this.onHud({
+    const hud: Hud = {
       phase: this.phase,
       camMode: this.camMode,
       score: Math.round(this.score),
@@ -591,7 +653,10 @@ export class Game {
       seedLabel: seedToLabel(this.seed),
       message: this.messageT > 0 ? this.message : "",
       messageT: this.messageT,
-    });
+    };
+    if (!force && this.lastHud && sameHud(this.lastHud, hud)) return;
+    this.lastHud = hud;
+    this.onHud(hud);
   }
 
   private dummy = new THREE.Object3D();
@@ -932,7 +997,7 @@ export class Game {
       const top = { x: s.x0 + (s.x1 - s.x0) / 2, y: s.y1 + 0.35, z: s.z0 + (s.z1 - s.z0) / 2 };
       switch (q?.content ?? "coin") {
         case "coin":
-          this.addScore(SCORE.BLOCK, top, "+100");
+          this.addScore(SCORE.BLOCK, top, "+150");
           this.coinCount++;
           sound.play("coin");
           this.fx.burst(top, { count: 12, color: "#ffd34d", speed: 6, up: 1.4, size: 0.2 });
@@ -1057,6 +1122,7 @@ export class Game {
   private enemyCheck(dt: number) {
     void dt;
     const p = this.p;
+    let stomped = false;
     for (const e of this.enemies) {
       if (e.state === "dead") continue;
       const dx = Math.abs(p.x - e.x);
@@ -1080,10 +1146,12 @@ export class Game {
       const canStomp = p.vy < -0.6 && feet > eTop - 0.5 && feet < eTop + 0.45;
       if (canStomp) {
         this.stompOn(e);
+        stomped = true;
       } else if (overlapY) {
         if (p.star > 0) this.killEnemy(e, 0, true);
         else if (p.spin > 0) this.killEnemy(e, 3, true);
-        else if (p.invuln <= 0) this.hurt(false);
+        // never damage the player from a second enemy in the same step they just stomped
+        else if (!stomped && p.invuln <= 0) this.hurt(false);
       }
     }
   }
@@ -1125,7 +1193,7 @@ export class Game {
     e.flip = 1;
     this.kills++;
     const base = SCORE.KILL * Math.max(1, mult);
-    this.addScore(base, { x: e.x, y: e.y + 1.1, z: e.z }, mult > 1 ? `+${base}` : `+${base}`);
+    this.addScore(base, { x: e.x, y: e.y + 1.1, z: e.z }, `+${base}`);
     const col = e.kind === "koopa" ? "#2fbf6d" : "#a5682f";
     this.fx.burst({ x: e.x, y: e.y + 0.4, z: e.z }, { count: splash ? 18 : 12, color: col, speed: 8, size: 0.24, life: 0.6 });
     this.fx.ring({ x: e.x, y: e.y + 0.1, z: e.z }, { count: 8, color: "#fff4dc", speed: 7, size: 0.18 });
@@ -1611,9 +1679,12 @@ export class Game {
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("blur", this.onBlur);
-    sound.stopMusic();
+    sound.dispose();
     this.disposeLevelMeshes();
+    this.renderer.domElement.remove();
+    this.overlay.remove();
     this.renderer.dispose();
+    this.renderer.forceContextLoss?.();
   }
 }
 

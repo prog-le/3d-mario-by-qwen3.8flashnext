@@ -19,6 +19,7 @@ export class Sound {
   private step = 0;
   private nextTime = 0;
   private mode: "off" | "menu" | "play" = "off";
+  private noiseBuf: AudioBuffer | null = null;
   muted = false;
 
   setMuted(m: boolean) {
@@ -27,24 +28,29 @@ export class Sound {
   }
 
   unlock() {
-    if (!this.ctx) {
-      const AC = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AC) return;
-      this.ctx = new AC() as Ctx;
-      this.master = this.ctx.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.9;
-      const comp = this.ctx.createDynamicsCompressor();
-      comp.threshold.value = -14;
-      comp.ratio.value = 5;
-      this.master.connect(comp).connect(this.ctx.destination);
-      this.musicGain = this.ctx.createGain();
-      this.musicGain.gain.value = 0.3;
-      this.musicGain.connect(this.master);
-      this.sfxGain = this.ctx.createGain();
-      this.sfxGain.gain.value = 0.85;
-      this.sfxGain.connect(this.master);
+    try {
+      if (!this.ctx) {
+        const AC = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AC) return;
+        this.ctx = new AC() as Ctx;
+        this.master = this.ctx.createGain();
+        this.master.gain.value = this.muted ? 0 : 0.9;
+        const comp = this.ctx.createDynamicsCompressor();
+        comp.threshold.value = -14;
+        comp.ratio.value = 5;
+        this.master.connect(comp).connect(this.ctx.destination);
+        this.musicGain = this.ctx.createGain();
+        this.musicGain.gain.value = 0.3;
+        this.musicGain.connect(this.master);
+        this.sfxGain = this.ctx.createGain();
+        this.sfxGain.gain.value = 0.85;
+        this.sfxGain.connect(this.master);
+      }
+      if (this.ctx.state === "suspended") void this.ctx.resume().catch(() => {});
+    } catch {
+      /* audio unavailable — keep the game silent instead of throwing */
+      this.ctx = null;
     }
-    if (this.ctx.state === "suspended") void this.ctx.resume();
   }
 
   /* ------------------------------- SFX ------------------------------- */
@@ -78,16 +84,18 @@ export class Sound {
     osc.stop(t0 + dur + 0.03);
   }
 
-  private noise(dur: number, opts: { gain?: number; freq?: number; q?: number; delay?: number } = {}) {
+  private noise(dur: number, opts: { gain?: number; freq?: number; q?: number; delay?: number; dest?: AudioNode | null } = {}) {
     const ctx = this.ctx;
     if (!ctx) return;
     const t0 = ctx.currentTime + (opts.delay ?? 0);
     const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    if (!this.noiseBuf || this.noiseBuf.length < len) {
+      this.noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+      const d = this.noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    }
     const src = ctx.createBufferSource();
-    src.buffer = buf;
+    src.buffer = this.noiseBuf;
     const filt = ctx.createBiquadFilter();
     filt.type = "bandpass";
     filt.frequency.value = opts.freq ?? 900;
@@ -95,8 +103,8 @@ export class Sound {
     const g = ctx.createGain();
     g.gain.setValueAtTime(opts.gain ?? 0.2, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    src.connect(filt).connect(g).connect(this.sfxGain!);
-    src.start(t0);
+    src.connect(filt).connect(g).connect(opts.dest ?? this.sfxGain!);
+    src.start(t0, 0, dur);
   }
 
   play(name: SfxName) {
@@ -200,11 +208,15 @@ export class Sound {
     this.mode = mode;
     this.step = 0;
     this.nextTime = this.ctx.currentTime + 0.06;
+    if (this.musicGain) this.musicGain.gain.setTargetAtTime(0.3, this.ctx.currentTime, 0.05);
     if (this.timer !== null) clearInterval(this.timer);
     const pat = this.patterns[mode];
     const spb = 60 / pat.bpm / 2;
     this.timer = window.setInterval(() => {
       const ctx = this.ctx!;
+      // background-tab timer throttling can leave nextTime far behind; skip the
+      // missed notes instead of scheduling them all at once (burst)
+      if (this.nextTime < ctx.currentTime - 0.5) this.nextTime = ctx.currentTime + 0.06;
       while (this.nextTime < ctx.currentTime + 0.22) {
         const i = this.step % 16;
         const t = this.nextTime;
@@ -225,7 +237,7 @@ export class Sound {
             delay: t - ctx.currentTime,
           });
         if (i % 4 === 0 && mode === "play")
-          this.noise(0.05, { gain: 0.05, freq: 6500, delay: t - ctx.currentTime });
+          this.noise(0.05, { gain: 0.05, freq: 6500, delay: t - ctx.currentTime, dest: this.musicGain });
         this.step++;
         this.nextTime += spb;
       }
@@ -237,6 +249,20 @@ export class Sound {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    // silence any notes already scheduled against the music bus
+    if (this.musicGain && this.ctx) this.musicGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.03);
+  }
+
+  dispose() {
+    this.stopMusic();
+    if (this.ctx) {
+      void this.ctx.close().catch(() => {});
+      this.ctx = null;
+      this.master = null;
+      this.musicGain = null;
+      this.sfxGain = null;
+      this.noiseBuf = null;
     }
   }
 }

@@ -213,8 +213,10 @@ function pipeGarden({ b, x, y, z, d, W }: Ctx) {
     if (i > 0 && b.rng.chance(0.5)) b.coinArc(px - (len - 4) / Math.max(1, count - 1), px, y, y + h, pz, 3, 0.8);
   }
   const enemies = b.rng.int(1, d > 0.5 ? 3 : 2);
-  for (let i = 0; i < enemies; i++) b.goomba(x + 3 + i * 2.6, y + 0.5, z + b.rng.range(-2.4, 2.4), 1.9);
-  if (b.rng.chance(0.5)) b.qblock(x + len - 1.6, y + 2.25, z + (b.rng.chance(0.5) ? 1.6 : -1.6), "coins");
+  // keep goombas in the clear center corridor (pipes sit at z ±1.9) so none spawn inside a pipe
+  for (let i = 0; i < enemies; i++) b.goomba(x + 3 + i * 2.6, y + 0.5, z + b.rng.range(-0.9, 0.9), 1.9);
+  // center z keeps the block clear of the pipes and their floating coins
+  if (b.rng.chance(0.5)) b.qblock(x + len - 1.6, y + 2.25, z, "coins");
   return { x: x + len, y, z };
 }
 
@@ -333,7 +335,8 @@ function goalSection({ b, x, y, z, W }: Ctx) {
   const flagX = x + 18.6;
 
   b.plat(x, plateauStart, y, z - W / 2 - 1.6, z + W / 2 + 1.6, "grass");
-  b.coinRow(x + 2.5, plateauStart - 2.5, y + 0.95, z, 5);
+  // stop before the ascending stone steps so coins never end up buried in a step block
+  b.coinRow(x + 2.5, x + 6.5, y + 0.95, z, 4);
   b.goomba(x + 5, y + 0.5, z + 1.4, 1.8);
 
   // classic ascending steps
@@ -414,6 +417,10 @@ export function generateLevel(seed: number): LevelData {
 
   const g = goalSection({ b, x: cursor, y, z, d: 0, W });
 
+  // ? blocks can also drop coins ("coin" = 1, "coins" = 5); count them so the
+  // HUD's `coins / coinTotal` never lets the numerator exceed the total.
+  const blockCoins = b.qblocks.reduce((n, q) => n + (q.content === "coin" ? 1 : q.content === "coins" ? 5 : 0), 0);
+
   return {
     solids: b.solids,
     coins: b.coins,
@@ -423,7 +430,7 @@ export function generateLevel(seed: number): LevelData {
     spawn: { x: -7, y: 1.2, z: 0 },
     flag: { x: g.flagX, y: g.y, z: g.z },
     endX: g.x,
-    coinTotal: b.coins.length,
+    coinTotal: b.coins.length + blockCoins,
     length: g.x + 10,
   };
 }

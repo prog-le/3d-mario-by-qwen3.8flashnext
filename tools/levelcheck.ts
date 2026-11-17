@@ -7,6 +7,8 @@ let totalCoins = 0;
 let minCoins = 1e9;
 let badY = 0;
 let nan = 0;
+let embeddedCoins = 0;
+let embeddedEnemies = 0;
 let lengths: number[] = [];
 
 for (let seed = 1; seed <= 250; seed++) {
@@ -46,14 +48,39 @@ for (let seed = 1; seed <= 250; seed++) {
   // enemies must start near a solid top (or be flyers)
   for (const e of lvl.enemies) {
     if (e.kind === "flyer") continue;
-    const near = tops.some((t) => Math.abs(e.x - (t.x0 + t.x1) / 2) < 6 && Math.abs(t.y - e.y) < 1.6);
+    // test "standing on a platform" by X-overlap, not distance-to-center (long platforms false-positived)
+    const near = tops.some((t) => e.x >= t.x0 && e.x <= t.x1 && Math.abs(t.y - e.y) < 1.6);
     if (!near) badY++;
+  }
+
+  // coins / enemies must never be embedded inside a solid AABB
+  const solids = lvl.solids.filter((s) => s.kind !== "spike");
+  for (const c of lvl.coins) {
+    for (const s of solids) {
+      if (
+        c.x > s.cx - s.sx / 2 && c.x < s.cx + s.sx / 2 &&
+        c.z > s.cz - s.sz / 2 && c.z < s.cz + s.sz / 2 &&
+        c.y > s.cy - s.sy / 2 && c.y < s.cy + s.sy / 2 - 0.25
+      ) { embeddedCoins++; break; }
+    }
+  }
+  for (const e of lvl.enemies) {
+    if (e.kind === "flyer") continue;
+    for (const s of solids) {
+      if (
+        e.x > s.cx - s.sx / 2 && e.x < s.cx + s.sx / 2 &&
+        e.z > s.cz - s.sz / 2 && e.z < s.cz + s.sz / 2 &&
+        e.y > s.cy - s.sy / 2 && e.y < s.cy + s.sy / 2
+      ) { embeddedEnemies++; break; }
+    }
   }
 }
 
 console.log({
   nan,
   badY,
+  embeddedCoins,
+  embeddedEnemies,
   worstGap: +worstGap.toFixed(2),
   avgSolids: Math.round(totalSolids / 250),
   maxSolids,

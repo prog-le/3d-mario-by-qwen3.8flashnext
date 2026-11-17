@@ -168,6 +168,7 @@ export function TouchControls({
   const [knob, setKnob] = useState({ dx: 0, dy: 0 });
   const pid = useRef<number | null>(null);
   const jumpPid = useRef<number | null>(null);
+  const zoneRect = useRef<DOMRect | null>(null);
   const [jumpHeld, setJumpHeld] = useState(false);
   const [spinHeld, setSpinHeld] = useState(false);
 
@@ -183,9 +184,10 @@ export function TouchControls({
   }, [active, reset]);
 
   const handleMove = (cx: number, cy: number) => {
-    if (!origin) return;
-    let dx = cx - origin.x;
-    let dy = cy - origin.y;
+    if (!origin || !zoneRect.current) return;
+    const r = zoneRect.current;
+    let dx = cx - r.left - origin.x;
+    let dy = cy - r.top - origin.y;
     const m = Math.hypot(dx, dy);
     if (m > R) {
       dx = (dx / m) * R;
@@ -205,9 +207,9 @@ export function TouchControls({
           pid.current = e.pointerId;
           (e.target as Element).setPointerCapture?.(e.pointerId);
           const r = e.currentTarget.getBoundingClientRect();
-          setOrigin({ x: e.clientX, y: e.clientY });
+          zoneRect.current = r;
+          setOrigin({ x: e.clientX - r.left, y: e.clientY - r.top });
           setKnob({ dx: 0, dy: 0 });
-          void r;
         }}
         onPointerMove={(e) => {
           if (pid.current !== e.pointerId) return;

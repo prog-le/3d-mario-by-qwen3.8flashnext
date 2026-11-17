@@ -18,7 +18,16 @@ export function loadScores(): ScoreEntry[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .filter((e) => e && typeof e.score === "number")
+      .filter((e) => e && typeof e === "object" && typeof e.score === "number" && Number.isFinite(e.score))
+      .map((e) => ({
+        name: typeof e.name === "string" ? e.name : "???",
+        score: e.score,
+        coins: typeof e.coins === "number" ? e.coins : 0,
+        timeMs: typeof e.timeMs === "number" && Number.isFinite(e.timeMs) ? e.timeMs : 0,
+        cleared: !!e.cleared,
+        seedLabel: typeof e.seedLabel === "string" ? e.seedLabel : "----",
+        date: typeof e.date === "number" ? e.date : 0,
+      }))
       .sort((a, b) => b.score - a.score)
       .slice(0, MAX);
   } catch {
